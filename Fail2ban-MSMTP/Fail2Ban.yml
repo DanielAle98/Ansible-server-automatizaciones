@@ -1,0 +1,85 @@
+---
+- name: Automatización de Despliegue Fail2ban 
+  hosts: all
+  become: true
+  vars:
+    usar_msmtp: false          # Cambiar a true si el servidor no tiene servicio de correo propio
+    dir_files_base: "/ruta/a/tu/ansible/files" # Definir ruta base de Ansible
+    entorno_conf: "pre"        # Definir subcarpeta del entorno
+
+  tasks:
+    # FASE I: Comprobación del entorno
+    - name: 0a. Comprobar si el servidor utiliza OpenResty
+      ansible.builtin.stat:
+        path: /usr/local/openresty/nginx/sbin/nginx
+      register: openresty_bin
+
+    - name: 0b. Definir variable del motor web
+      ansible.builtin.set_fact:
+        tipo_web: "{{ 'openresty' if openresty_bin.stat.exists else 'nginx' }}"
+
+    # FASE II: Instalación y arranque inicial
+    - name: 1. Instalar repositorio EPEL
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+
+    - name: 2a. Instalar paquete Fail2ban
+      ansible.builtin.dnf:
+        name: fail2ban
+        state: latest
+        update_cache: true
+
+    - name: 2b. Arrancar Fail2ban con config por defecto (crea el log de forma nativa)
+      ansible.builtin.service:
+        name: fail2ban
+        state: started
+        enabled: true
+
+    - name: 2c. Instalar MSMTP (solo si el servidor no tiene correo nativo)
+      ansible.builtin.dnf:
+        name: msmtp
+        state: latest
+      when: usar_msmtp
+
+    # FASE III: Copia de configuraciones
+    - name: 3. Desplegar filtros comunes
+      ansible.builtin.copy:
+        src: "{{ dir_files_base }}/Instalacion/{{ item.src }}"
+        dest: "/etc/fail2ban/{{ item.dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - { src: 'nginx-sslerror.conf', dest: 'filter.d/nginx-sslerror.conf' }
+        - { src: 'nginx-4xx.conf', dest: 'filter.d/nginx-4xx.conf' }
+        - { src: 'nginx-forbiden.conf', dest: 'filter.d/nginx-forbiden.conf' }
+        - { src: 'sendmail-whois-lines.local', dest: 'action.d/sendmail-whois-lines.local' }
+
+    - name: 4a. Desplegar archivos de configuracion especificos de PRAN PRE
+      ansible.builtin.copy:
+        src: "{{ dir_files_base }}/{{ entorno_conf }}/{{ item.src }}"
+        dest: "/etc/fail2ban/{{ item.dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - { src: 'jail.local', dest: 'jail.local' }
+        - { src: 'paths-overrides-{{ tipo_web }}.local', dest: 'paths-overrides.local' }
+        - { src: 'sendmail-common.local', dest: 'action.d/sendmail-common.local' }
+
+    - name: 4b. Desplegar configuracion de MSMTP (solo si usar_msmtp es true)
+      ansible.builtin.copy:
+        src: "{{ dir_files_base }}/{{ entorno_conf }}/msmtprc"
+        dest: /etc/msmtprc
+        owner: root
+        group: root
+        mode: '0644'
+      when: usar_msmtp
+
+    # FASE IV: Aplicación de cambios
+    - name: 5. Habilitar y reiniciar el servicio Fail2ban
+      ansible.builtin.service:
+        name: fail2ban
+        enabled: true
+        state: restarted

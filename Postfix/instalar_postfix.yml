@@ -1,0 +1,66 @@
+---
+- name: Despliegue automatizado de Postfix como Relay
+  hosts: all
+  become: yes
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+  vars_files:
+    - secrets.yml
+
+  vars:
+    postfix_myhostname: "{{ inventory_hostname }}"
+    postfix_mydomain: "empresa.local"
+    postfix_relayhost: "[smtp.office365.com]:587" 
+
+  tasks:
+    - name: Instalar postfix y mailutils (Ubuntu/Debian)
+      package:
+        name: 
+          - postfix
+          - mailutils
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Instalar postfix y mailx (RedHat/CentOS)
+      package:
+        name: 
+          - postfix
+          - mailx
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Desplegar archivo de configuracion main.cf
+      template:
+        src: main.cf.j2
+        dest: /etc/postfix/main.cf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reiniciar postfix
+
+    - name: Desplegar archivo de contrasenas SASL
+      template:
+        src: sasl_passwd.j2
+        dest: /etc/postfix/sasl_passwd
+        owner: root
+        group: root
+        mode: '0600'
+      notify: 
+        - Hashear sasl_passwd
+        - Reiniciar postfix
+
+    - name: Asegurar que el servicio esta iniciado y habilitado
+      systemd:
+        name: postfix
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Hashear sasl_passwd
+      command: postmap /etc/postfix/sasl_passwd
+
+    - name: Reiniciar postfix
+      systemd:
+        name: postfix
+        state: restarted
